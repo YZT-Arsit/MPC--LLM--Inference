@@ -1,0 +1,74 @@
+run:
+  run_name: null
+  output_root: ./outputs
+
+paths:
+  model_path: your-model-path-or-hf-id
+  teacher_model_path: null
+  cache_dir: null
+
+model:
+  model_name: null
+  model_path: your-model-path-or-hf-id
+  tokenizer_name: your-model-path-or-hf-id
+  use_fast_tokenizer: true
+  cache_dir: null
+
+data:
+  train_path: ./data/train.jsonl
+  eval_path: null
+  template_type: text
+
+training:
+  output_dir: ./outputs/placeholder
+  num_train_epochs: 1
+  per_device_train_batch_size: 1
+  per_device_eval_batch_size: 1
+  gradient_accumulation_steps: 1
+  learning_rate: 2.0e-5
+  weight_decay: 0.0
+  warmup_ratio: 0.0
+  lr_scheduler_type: linear
+  logging_steps: 10
+  save_steps: 100
+  save_total_limit: 2
+  bf16: true
+  fp16: false
+  dataloader_num_workers: 0
+  remove_unused_columns: false
+  logging_strategy: steps
+  save_strategy: steps
+  evaluation_strategy: "no"
+  report_to: []
+  optim: adamw_torch
+  model_max_length: 2048
+
+marill:
+  teacher_model: null
+  hs_coef: 0.0
+  att_coef: 0.0
+  logit_coef: 0.0
+  label_coef: 1.0
+  layer_config: full
+  weight_config: full
+  head_config: default
+  act_type: default
+  smax_type: default
+  training_phase: training
+  kl_method: forward
+  student_temperature: 1.0
+  teacher_temperature: 1.0
+
+logging:
+  project_name: marill
+  report_to: []
+
+# TODO: Replace `your-model-path-or-hf-id` with a real local path or Hub model ID
+# on the target server.
+# TODO: `data.template_type` currently supports only `text` and `instruction`.
+# For `text`, each JSONL line should look like: {"text": "..."}.
+# TODO: If distillation is enabled by setting hs/att/logit coefficients > 0,
+# provide a real `paths.teacher_model_path`.
+# TODO: The current training skeleton is intended for server-side torchrun usage.
+# Single-process local execution may still fail because the existing MarillTrainer
+# contains distributed barriers.

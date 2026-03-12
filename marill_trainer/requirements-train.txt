@@ -1,0 +1,23 @@
+# Minimal training-side dependencies for the marill_trainer skeleton.
+# Install torch separately on the target server according to its CUDA version:
+# https://pytorch.org/get-started/locally/
+#
+# Example:
+#   pip install -r marill_trainer/requirements-train.txt
+#
+# TODO: Lock exact versions after verifying the server CUDA / torch /
+# transformers / flash-attn compatibility matrix.
+
+PyYAML>=6.0
+transformers>=4.31.0
+accelerate>=0.21.0
+peft>=0.4.0
+wandb>=0.15.0
+einops>=0.6.0
+
+# The existing codebase imports flash-attn directly in llama_flash_attn_monkey_patch.py.
+# This package usually needs to be installed separately in a CUDA-enabled server env.
+flash-attn==2.1.0
+
+# Optional but recommended for standard Trainer workflows.
+datasets>=2.14.0

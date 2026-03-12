@@ -37,6 +37,10 @@ def build_tokenizer(cfg: Mapping[str, Any]) -> Any:
 
     if tokenizer.pad_token is None and tokenizer.eos_token is not None:
         tokenizer.pad_token = tokenizer.eos_token
+    if tokenizer.pad_token is None:
+        raise ValueError(
+            "Tokenizer must define a pad_token, or at least an eos_token that can be reused as pad_token."
+        )
 
     # TODO: Some models may require special tokenizer settings on the server
     # side, especially around padding side and chat template handling.
@@ -57,7 +61,7 @@ def build_training_args(cfg: Mapping[str, Any], output_dir: str) -> MarillTraini
         raw_values.update(section)
 
     raw_values["output_dir"] = output_dir
-    raw_values["cache_dir"] = model_cfg.get("cache_dir", paths_cfg.get("cache_dir"))
+    raw_values["cache_dir"] = model_cfg.get("cache_dir") or paths_cfg.get("cache_dir")
 
     teacher_model_path = paths_cfg.get("teacher_model_path")
     if teacher_model_path and "teacher_model" in field_names:
@@ -74,9 +78,12 @@ def build_training_args(cfg: Mapping[str, Any], output_dir: str) -> MarillTraini
     return MarillTrainingArguments(**argument_values)
 
 
-def build_trainer(cfg: Mapping[str, Any]) -> MarillTrainer:
+def build_trainer(
+    cfg: Mapping[str, Any],
+    directories: Optional[Mapping[str, Any]] = None,
+) -> MarillTrainer:
     """Build the MarillTrainer and all minimal dependencies around it."""
-    directories = prepare_output_dirs(cfg)
+    directories = dict(directories or prepare_output_dirs(cfg))
     tokenizer = build_tokenizer(cfg)
     train_dataset = build_train_dataset(cfg, tokenizer)
     eval_dataset = build_eval_dataset(cfg, tokenizer)
@@ -113,7 +120,7 @@ def run_training(cfg: Mapping[str, Any], cli_args: Optional[Mapping[str, Any]] =
     run_metadata = build_run_metadata(cfg, directories, cli_args=cli_args)
     save_run_metadata(run_metadata, directories["output_dir"])
 
-    trainer = build_trainer(cfg)
+    trainer = build_trainer(cfg, directories=directories)
     trainer.train()
     trainer.finalize()
     return trainer
