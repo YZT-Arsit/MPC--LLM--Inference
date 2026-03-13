@@ -1,4 +1,4 @@
-from typing import List, Optional, Tuple, Union
+from typing import Any, List, Optional, Tuple, Union
 import copy
 
 import torch
@@ -19,6 +19,14 @@ from marill_trainer import llama_flash_attn_monkey_patch
 def rank0_print(*args):
     if (not torch.distributed.is_initialized()) or torch.distributed.get_rank() == 0:
         print(*args)
+
+def get_rotary_cos_sin(rotary_emb, value_states, position_ids, kv_seq_len):
+    try:
+        if position_ids is not None:
+            return rotary_emb(value_states, position_ids)
+    except TypeError:
+        pass
+    return rotary_emb(value_states, seq_len=kv_seq_len)
 
 class LlamaModelTeacher(LlamaModel):
     def __init__(self, config: LlamaConfig):
@@ -171,6 +179,8 @@ class LlamaModelStudent(LlamaModel):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
+        cache_position: Optional[torch.LongTensor] = None,
+        **kwargs: Any,
     ) -> Union[Tuple, BaseModelOutputWithPast]:
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
@@ -322,6 +332,9 @@ class LlamaDecoderLayerIdentity(nn.Module):
         past_key_value: Optional[Tuple[torch.Tensor]] = None,
         output_attentions: Optional[bool] = False,
         use_cache: Optional[bool] = False,
+        cache_position: Optional[torch.LongTensor] = None,
+        position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        **kwargs: Any,
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
         outputs = (hidden_states,)
         # just put None for attn_output; MarillTrainer will take care of it
@@ -335,7 +348,12 @@ class LlamaFlashAttention(LlamaAttention):
     pass
 LlamaFlashAttention.forward = llama_flash_attn_monkey_patch.forward
 
-from transformers.activations import GELUActivation, SiLUActivation, ClassInstantier
+from torch import nn
+from transformers.activations import GELUActivation, ClassInstantier
+
+class SiLUActivation(nn.SiLU):
+    pass
+
 class QuadActivation(nn.Module):
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         return 0.125*torch.square(input) + 0.25*input + 0.5
@@ -443,6 +461,9 @@ class LlamaDecoderLayerOutputContext(nn.Module):
         past_key_value: Optional[Tuple[torch.Tensor]] = None,
         output_attentions: Optional[bool] = False,
         use_cache: Optional[bool] = False,
+        cache_position: Optional[torch.LongTensor] = None,
+        position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        **kwargs: Any,
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
         residual = hidden_states
 
@@ -503,6 +524,9 @@ class LlamaStandardAttention(LlamaAttention):
         past_key_value: Optional[Tuple[torch.Tensor]] = None,
         output_attentions: bool = False,
         use_cache: bool = False,
+        cache_position: Optional[torch.LongTensor] = None,
+        position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        **kwargs: Any,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
         bsz, q_len, _ = hidden_states.size()
 
@@ -529,7 +553,7 @@ class LlamaStandardAttention(LlamaAttention):
         kv_seq_len = key_states.shape[-2]
         if past_key_value is not None:
             kv_seq_len += past_key_value[0].shape[-2]
-        cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
+        cos, sin = get_rotary_cos_sin(self.rotary_emb, value_states, position_ids, kv_seq_len)
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
 
         if past_key_value is not None:

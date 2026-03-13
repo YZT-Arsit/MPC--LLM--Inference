@@ -1,16 +1,33 @@
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 import torch
 from torch import nn
 
 import transformers
-from transformers.models.llama.modeling_llama import apply_rotary_pos_emb
+from transformers.models.llama.modeling_llama import apply_rotary_pos_emb, repeat_kv
 
 from einops import rearrange
 
 #from flash_attn.flash_attn_interface import flash_attn_unpadded_qkvpacked_func
 from flash_attn.flash_attn_interface import flash_attn_varlen_qkvpacked_func
 from flash_attn.bert_padding import unpad_input, pad_input
+
+def get_rotary_cos_sin(rotary_emb, value_states, position_ids, kv_seq_len):
+    try:
+        if position_ids is not None:
+            return rotary_emb(value_states, position_ids)
+    except TypeError:
+        pass
+    return rotary_emb(value_states, seq_len=kv_seq_len)
+
+def compat_unpad_input(x, key_padding_mask):
+    unpad_result = unpad_input(x, key_padding_mask)
+    if len(unpad_result) == 4:
+        return unpad_result
+    if len(unpad_result) == 5:
+        x_unpad, indices, cu_q_lens, max_s, _ = unpad_result
+        return x_unpad, indices, cu_q_lens, max_s
+    raise ValueError(f"Unexpected unpad_input return length: {len(unpad_result)}")
 
 def forward(
     self,
@@ -20,6 +37,9 @@ def forward(
     past_key_value: Optional[Tuple[torch.Tensor]] = None,
     output_attentions: bool = False,
     use_cache: bool = False,
+    cache_position: Optional[torch.Tensor] = None,
+    position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+    **kwargs: Any,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor],
             Optional[Tuple[torch.Tensor]]]:
     """Input shape: Batch x Time x Channel
@@ -29,8 +49,8 @@ def forward(
     bsz, q_len, _ = hidden_states.size()
 
     query_states = self.q_proj(hidden_states).view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
-    key_states = self.k_proj(hidden_states).view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
-    value_states = self.v_proj(hidden_states).view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
+    key_states = self.k_proj(hidden_states).view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+    value_states = self.v_proj(hidden_states).view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
     # [bsz, q_len, nh, hd]
     # [bsz, nh, q_len, hd]
 
@@ -49,11 +69,15 @@ def forward(
     kv_seq_len = key_states.shape[-2]
     assert past_key_value is None, "past_key_value is not supported"
 
-    cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
+    cos, sin = get_rotary_cos_sin(self.rotary_emb, value_states, position_ids, kv_seq_len)
     query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
     # [bsz, nh, t, hd]
     assert not output_attentions, "output_attentions is not supported"
     assert not use_cache, "use_cache is not supported"
+
+    # Expand grouped-query key/value heads to match query heads before packing qkv.
+    key_states = repeat_kv(key_states, self.num_key_value_groups)
+    value_states = repeat_kv(value_states, self.num_key_value_groups)
 
     # Flash attention codes from
     # https://github.com/HazyResearch/flash-attention/blob/main/flash_attn/flash_attention.py
@@ -86,7 +110,7 @@ def forward(
         nheads = qkv.shape[-2]
         x = rearrange(qkv, 'b s three h d -> b s (three h d)')
         
-        x_unpad, indices, cu_q_lens, max_s = unpad_input(x, key_padding_mask)
+        x_unpad, indices, cu_q_lens, max_s = compat_unpad_input(x, key_padding_mask)
         x_unpad = rearrange(x_unpad, 'nnz (three h d) -> nnz three h d', three=3, h=nheads)
         output_unpad = flash_attn_varlen_qkvpacked_func( #flash_attn_unpadded_qkvpacked_func(
             x_unpad, cu_q_lens, max_s, 0.0,
