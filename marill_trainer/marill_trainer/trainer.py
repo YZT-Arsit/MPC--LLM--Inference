@@ -415,10 +415,23 @@ def trainer_save_model_safe(trainer: transformers.Trainer):
     from torch.distributed.fsdp import StateDictType, FullStateDictConfig
 
     torch.distributed.barrier()
-    save_policy = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
-    with FSDP.state_dict_type(
-        trainer.model, StateDictType.FULL_STATE_DICT, save_policy
-    ):
+    if isinstance(trainer.model, FSDP):
+        save_policy = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
+        with FSDP.state_dict_type(
+            trainer.model, StateDictType.FULL_STATE_DICT, save_policy
+        ):
+            trainer.save_model()
+            if trainer.marill_config.weight is WeightConfig.LoRA:
+                from peft import get_peft_model_state_dict
+                state_dict = get_peft_model_state_dict(trainer.model)
+                for name, tensor in state_dict.items():
+                    rank0_print(f"Saving {name} with shape {tensor.shape}")
+                import os
+                if torch.distributed.get_rank() == 0:
+                    torch.save(state_dict, os.path.join(trainer.args.output_dir, "adapter_model.bin"))
+                # PEFT save_pretrained is buggy
+                # trainer.model.save_pretrained(trainer.args.output_dir, safe_serialization=False, is_main_process=torch.distributed.get_rank() == 0)
+    else:
         trainer.save_model()
         if trainer.marill_config.weight is WeightConfig.LoRA:
             from peft import get_peft_model_state_dict
@@ -428,8 +441,6 @@ def trainer_save_model_safe(trainer: transformers.Trainer):
             import os
             if torch.distributed.get_rank() == 0:
                 torch.save(state_dict, os.path.join(trainer.args.output_dir, "adapter_model.bin"))
-            # PEFT save_pretrained is buggy
-            # trainer.model.save_pretrained(trainer.args.output_dir, safe_serialization=False, is_main_process=torch.distributed.get_rank() == 0)
     torch.distributed.barrier()
 
 class MarillTrainer(Trainer):
